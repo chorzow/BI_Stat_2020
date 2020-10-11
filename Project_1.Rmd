@@ -1,0 +1,52 @@
+---
+title: "Project_1"
+author: "John Doe"
+date: "10/11/2020"
+output: html_document
+---
+## 0. Install required packages
+```{r message=FALSE, results='hide'}
+pckgs <- c('dplyr', 'ggplot2')
+for(i in pckgs){
+  if(!require(i, character.only = T)){
+    install.packages(i, dependencies = T)
+    library(i)
+  }
+}
+```
+
+## 1. User function combining multiple .csv files into one dataframe
+
+**unite_multiple csv** function takes an absolute path to directory with files as an input. Basically, it creates a list of all .csv files in this directory and applies **read.csv** over them. As columns can be of different types, it converts all columns to numeric to prevent an error when **bind.rows** is called. After binding all data frames by row, it converts 'Sex' variable into factor type. Final dataframe is assigned to global variable mussels_data.
+
+```{r unite, echo=T}
+unite_multiple_csv <- function(path_to_files){
+  mussels_data <<- list.files(path=path_to_files, pattern='*.csv') %>% 
+    lapply(read.csv, stringsAsFactors = T) %>% 
+    lapply(function(df) mutate_if(df, is.factor, as.numeric)) %>% 
+    bind_rows %>% 
+    mutate_at(vars(contains('Sex')), as.factor)
+}
+```
+
+Let's give it a try:
+```{r try, echo=T}
+unite_multiple_csv('.')
+```
+
+Let's take a quick look on our data:
+```{r}
+str(mussels_data)
+```
+
+I thought that second variable's name is too long so I decided to rename it into "Sex":
+```{r}
+names(mussels_data)[2] <- 'Sex'
+str(mussels_data)
+```
+
+Much better.
+
+## 2. EDA
+
+TBA
