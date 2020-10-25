@@ -1,9 +1,11 @@
 ---
 title: "Project_1"
-output: 
+output:
+  pdf_document:
+    toc: yes
   html_document:
-    toc: true
-    toc_float: true
+    toc: yes
+    toc_float: yes
 ---
 ## 0. Install required packages
 
@@ -256,13 +258,13 @@ Looking at this graph, it can be concluded that diameter of mussels with 5 rings
 
 ## 8. Correlations between Diameter and Whole_weight
 
-Looking at EDA results, I can assume that these variables could correlate with each other. To check that, I used Pearson correlation method.
+Looking at EDA results, I can assume that these variables could correlate with each other. To check that, I used Spearman correlation method.
 
 ```{r correlation test}
-cor.test(mussels$Diameter, mussels$Whole_weight)
+cor.test(mussels$Diameter, mussels$Whole_weight, method = 'spearman')
 ```
 
-Indeed, according to Pearson's correlation, Diameter and Whole_weight demonstrate strong positive statistically significant correlation between them. It can be visualized with a plot like this:
+Indeed, according to Spearman's correlation, Diameter and Whole_weight demonstrate strong positive statistically significant correlation between them. It can be visualized with a plot like this:
 
 ```{r correlation plot, warning=F, message=F}
 ggplot(data = mussels, aes(Diameter, Whole_weight)) + geom_point() + geom_smooth(method=lm) + theme_bw() + ylab("Whole weight") + ylim(0, 3) + ggtitle("Correlation of diameter and whole weight of mussel")
