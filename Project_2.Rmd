@@ -1,0 +1,319 @@
+---
+title: "Project 2"
+author: "John Doe"
+date: "11/27/2020"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(psych)
+library(car)
+library(ggplot2)
+library(dplyr)
+library(MASS)
+library(gridExtra)
+library(FactoMineR)
+theme_set(theme_bw())
+```
+
+# CHAPTER 1. FULL MODEL
+
+## 0. Brief EDA
+
+To explore our data, we used the `str` function. In addition, basic plot showing correlations between variables was made.
+```{r eda}
+data("Boston")
+str(Boston)
+```
+
+```{r primary plot}
+plot(Boston)
+```
+
+Variables `chas` and `rad` should be converted to factors as they are not continuous.
+```{r tidying up}
+Boston$chas <- as.factor(Boston$chas)
+Boston$rad <- as.factor(Boston$rad)
+```
+
+## 1. Making a full model
+
+According to the task, a full model without interactions between predictors should be made. We standardized all variables to determine the most influential predictor:
+```{r full model}
+model_full <- lm(medv ~ ., data = Boston)
+summary(model_full)
+```
+
+```{r scaled}
+Boston_scaled <- as.data.frame(sapply(Boston[,-c(4,9)], scale))
+model_scale <- lm(medv ~ ., data = Boston_scaled)
+summary(model_scale)
+```
+
+The most influential predictor is the percentage of lower status of the population (its absolute value in the column Estimate is the biggest one). We will remember this information for the further analysis. Also notice the percentage of the variance that is explained by our model (Adjusted R-squared) - approximately 73%.
+
+## 2. Diagnosing the full model
+
+To determine how effectively this model can be applied to new data, we need to check if all requirements to use multiple regression on ths data are met. `fortify` function was applied to the model to compute all information required for diagnostics.
+```{r fortify}
+model_diag <- fortify(model_full)
+```
+
+### 2a. Relationship linearity
+
+To assess the linearity, let's see how fitted values of the `medv` variable are distributed by standardized residuals.
+```{r linearity, message=F}
+gg_resid <- ggplot(data = model_diag, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() +
+  geom_smooth(method = 'lm') + 
+  geom_hline(yintercept = 0) + 
+  geom_hline(yintercept = 2, color = 'red') + 
+  geom_hline(yintercept = -2, color = 'red')
+gg_resid
+```
+There are some outliers present in our model. Since we are only diagnosing the full model at this step, we will decide whether we need to filter such values later, after looking at the other criteria.
+
+### 2b. Influential observations
+
+The presence of the influential observations was assessed using Cook's distance plot:
+
+```{r influential observations}
+ggplot(model_diag, aes(x = 1:nrow(model_diag), y= .cooksd)) + 
+  geom_bar(stat = 'identity') + 
+  geom_hline(yintercept = 2, color = 'red')
+```
+
+No values are above the threshold of 2. There are no influential observations. 
+
+### 2c. Independence of observations
+```{r Cleveland}
+ggplot(Boston, aes(x = medv, y = 1:nrow(Boston))) + 
+  geom_point() + 
+  labs(y = 'Observation number', x = 'Predicted variable values')
+```
+It seems like there is some autocorrelations present in our data.
+
+### 2d. Normality of distribution and variance consistency
+
+Finally, let's assess the normality of predicted variable distribution and consistency of variance. From the distribution of standardized residuals we noticed that they were distributed unevenly. Just in case, let's make a couple of additional plots visualizing distribution of residuals by observation number..
+```{r residuals by observation number}
+ggplot(data = model_diag, aes(x = 1:nrow(model_diag), y = .stdresid)) +
+  geom_point() + 
+  labs(y = 'Standardized Residual', x = 'Observation number')
+```
+It can be seen that residuals are distributed evenly in general, but there are some outliers around observation number 350-370.
+
+One more good way to visualize the residuals distribution is QQ-plot. Let's make one for the residuals...
+```{r qq-plot residuals}
+invisible(qqPlot(model_diag$.stdresid))
+```
+...and one more for the `medv` variable:
+```{r qq-plot medv}
+invisible(qqPlot(model_diag$.fitted))
+```
+As expected, standardized residuals are distributed not so good, but `medv` variable distribution is okay.
+
+Since the optimization step was not included in mandatory part, now let's make predictions with resulting model, using the most influential predictor (`lstat`) for predictions. Test data were generated using the following code (for `chas` and `rad` variables I used the median value):
+```{r test data}
+Test_data <- data.frame(
+  lstat = seq(min(Boston$lstat), max(Boston$lstat), length.out = 100),
+  crim = mean(Boston$crim), zn = mean(Boston$zn), indus = mean(Boston$indus),
+  chas = as.factor(median(as.numeric(Boston$chas))), nox = mean(Boston$nox), rm = mean(Boston$rm),
+  age = mean(Boston$age), dis = mean(Boston$dis), rad = as.factor(median(as.numeric(Boston$rad))),
+  tax = mean(Boston$tax), ptratio = mean(Boston$ptratio), black = mean(Boston$black))
+```
+
+Let's obtain predicted values and attach them to our test data:
+```{r predictions}
+Predictions <- predict(model_full, newdata = Test_data, interval = 'confidence')
+Test_data <- data.frame(Test_data, Predictions)
+```
+
+## 3. Plotting the full model
+
+Let's plot our full model:
+```{r full model plot}
+plot_predict <- ggplot(Test_data, aes(x = lstat, y = fit)) + 
+  geom_ribbon(alpha = 0.2, aes(ymin = lwr, ymax = upr)) +
+  geom_line() + 
+  ggtitle('Full model')
+plot_predict
+```
+
+The resulting full model has some disadvantages. First, requirements for using multiple regression were met only partially. Moreover, there was no testing for multicollinearity in this model which is mandatory in multiple linear models. In addition, our model explains around 74% of variance, according to the Adjusted R-squared of `summary()` call in section 1. Lastly, overabundance of predictors can lead to overfitting of our model. It could be a good addition to remove insignificant predictors from it.
+To sum up, the model can be optimized. Let's try to do this.
+
+# CHAPTER 2. OPTIMIZING THE MODEL
+
+Let's start with testing for multicollinearity of the predictors. For this, variance inflation factor (VIF) will be used. The predictor is removed if its corrected VIF value exceeds 2. After this, the model is updated.
+```{r vif}
+vif(model_full)
+```
+
+Some predictors can be removeed. Let's start with `tax`, as it has the largest VIF value:
+```{r vif no tax}
+model_1 <- update(model_full, .~. - tax)
+vif(model_1)
+```
+
+Now for the `nox`:
+```{r vif no nox}
+model_2 <- update(model_1, .~. - nox)
+vif(model_2)
+```
+
+Great. Seems like we have removed the multicollinearity from our model. Now let's see if the model has any insignificant predictors. We will do it using backward selection with a series of F-tests:
+
+```{r backward selection}
+drop1(model_2, test = 'F')
+```
+
+Let's remove an insignificant predictor `age`:
+```{r model remove age}
+model_3 <- update(model_2, .~. - age)
+drop1(model_3, test = 'F')
+```
+
+Now we need to verify that removed predictors have an impact on our model by plotting the distribution of their standardized residuals by deleted predictors:
+
+```{r verify, message=F}
+res_tax <- gg_resid + aes(x = tax)
+res_nox <- gg_resid + aes(x = nox)
+res_age <- gg_resid + aes(x = age)
+grid.arrange(res_tax, res_nox, res_age)
+```
+
+Let's check if our model has improved:
+```{r summary model3}
+summary(model_3)
+```
+
+No, it didn't. Seems like we are missing something important. Maybe some predictors interact with each other? Let's make a model with interactions between all predictors that we have:
+
+```{r corplot}
+pairs.panels(Boston[,-c(5,7,10,14)], method = "pearson",
+             hist.col = "cornflowerblue",
+             density = T, ellipses = F)
+```
+
+Some of the variables have strong positive and negative correlations. To include such correlations in our model, let's pick the interactions with absolute correlation coefficient >= 0.6 and include interactions between them in our model:
+
+```{r interactions model}
+model_4 <- update(model_3, .~crim + zn + zn:dis + indus + indus:dis + indus:lstat + chas + rm + rm:lstat + dis + rad + ptratio + black + lstat)
+summary(model_4)
+```
+
+Now the percent of variance explained by our model increased drastically - it now explains about 80% of variance. It is a good sign.
+
+## Diagnostics of the new model
+
+For the validation of the new model, I will diagnose it as well. 
+
+```{r diagnosing new model}
+model_4_diag <- fortify(model_4)
+```
+
+### Pattern in residuals
+```{r linearity_new, message=F}
+gg_resid_m4 <- ggplot(data = model_4_diag, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() +
+  geom_smooth(method = 'lm') + 
+  geom_hline(yintercept = 0) + 
+  geom_hline(yintercept = 2, color = 'red') + 
+  geom_hline(yintercept = -2, color = 'red')
+gg_resid_m4
+```
+
+The situation is a little bit better - there are still some outliers but their amount is less than before. That's a good sign.
+
+### Influential observations
+
+```{r influential observations new}
+ggplot(model_4, aes(x = 1:nrow(model_diag), y= .cooksd)) + 
+  geom_bar(stat = 'identity') + 
+  geom_hline(yintercept = 2, color = 'red')
+```
+
+Still, no values are above the threshold of 2. There are no influential observations. 
+
+### Independence of observations
+```{r Cleveland_new}
+ggplot(Boston, aes(x = medv, y = 1:nrow(Boston))) + 
+  geom_point() + 
+  labs(y = 'Observation number', x = 'Predicted variable values')
+```
+We didn't do anything with our data so, sadly, the autocorrelations are still present. 
+
+### Normality of distribution and variance consistency
+
+
+```{r residuals by observation number new}
+ggplot(data = model_4_diag, aes(x = 1:nrow(model_4_diag), y = .stdresid)) +
+  geom_point() + 
+  labs(y = 'Standardized Residual', x = 'Observation number')
+```
+
+Similarly, the situation is better - there are still some outliers present in our data, but their number decreased so I decided not to filter such observations out.
+
+Let's make QQ-plots for the residuals...
+```{r qq-plot residuals new}
+invisible(qqPlot(model_4_diag$.stdresid))
+```
+...and for the predicted variable:
+```{r qq-plot medv new}
+invisible(qqPlot(model_4_diag$.fitted))
+```
+
+As I mentioned before, the decision was made to leave the data as is for the sake of model accuracy. For sure, filtering outliers could somehow improve our results but I would discuss it with you at additional meeting because the ways of treating outliers can be different and their removal dramatically influences the distribution of variables in data. For now, I will check which standardized predictor has the biggest influence, make some more test data and plot the resulting model.
+
+```{r scaling new}
+Boston_scaled_4 <- as.data.frame(sapply(Boston[,-c(4,5,7,9,10)], scale))
+model_4_scale <- lm(medv ~ crim + zn + zn:dis + indus + indus:dis + indus:lstat + rm + rm:lstat + dis + ptratio + black + lstat, data = Boston_scaled)
+summary(model_4_scale)
+```
+
+As before, the most influential predictor is the percentage of lower status of the population. Let's generate some test data to predict the values:
+
+```{r test data_4}
+Test_data_4 <- data.frame(
+  lstat = seq(min(Boston$lstat), max(Boston$lstat), length.out = 100),
+  crim = mean(Boston$crim), zn = mean(Boston$zn), indus = mean(Boston$indus),
+  chas = as.factor(median(as.numeric(Boston$chas))), rm = mean(Boston$rm),
+  dis = mean(Boston$dis), rad = as.factor(median(as.numeric(Boston$rad))),
+  ptratio = mean(Boston$ptratio), black = mean(Boston$black))
+```
+
+Let's obtain predicted values and attach them to our test data:
+```{r predictions_4}
+Predictions_4 <- predict(model_4, newdata = Test_data_4, interval = 'confidence')
+Test_data_4 <- data.frame(Test_data_4, Predictions_4)
+```
+
+Let's plot our resulting model:
+```{r resulting model}
+plot_predict_4 <- ggplot(Test_data_4, aes(x = lstat, y = fit)) + 
+  geom_ribbon(alpha = 0.2, aes(ymin = lwr, ymax = upr)) +
+  geom_line() + 
+  ggtitle('Optimal model')
+plot_predict_4
+```
+
+This plot is slightly different than the plot for full model. However, we were able to obtain better results with the model optimization and add more than 10% to its accuracy. It could be further improved, but, like in any model in multiple linear regression, there is no limit to perfection. In conclusion, I can say that **to maximize the cost of the house, one should consider the following parameters:**
+* crime rate 
+* proportion of residential land
+* proportion of non-retail business acres per town
+* distance from the Charles River
+* number of rooms
+* distance to five Boston employment centres
+* index of accessibility to radial highways
+* pupil-teacher ratio in the area
+* proportion of blacks in the area
+* the lower status of the population (the most important aspect) 
+
+Good luck and take care!
+
+A.
