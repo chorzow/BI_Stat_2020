@@ -1,0 +1,331 @@
+---
+title: 'Project 3: Mice'
+author: "John Doe"
+date: "2/23/2021"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# 0. Installing required packages
+
+```{r package installation, message=FALSE, results='hide'}
+pckgs <- c('readxl', 'dplyr', 'tidyr', 'ggplot2', 'car', 'vegan', 'plotly')
+for(i in pckgs){
+  if(!require(i, character.only = T)){
+    install.packages(i, dependencies = T)
+    library(i)
+  }
+}
+```
+
+# 1. EDA, data description
+First, let's import data and have a look at it:
+
+```{r load data}
+mice_prot <- read_xls('/home/chorzow/BI/R/Project_3/Data_Cortex_Nuclear.xls')
+glimpse(mice_prot)
+```
+
+On the web page with the data set (https://archive.ics.uci.edu/ml/datasets/Mice+Protein+Expression#), there is a description of the data. This information will be used as a reference. According to the description, `MouseID` column is organized the following way: mouse ID and measurement number, separated by underscore (ID_Measurement). It would be useful to split this column into two for convenience:
+
+```{r split the ID column}
+mice_prot <- mice_prot %>% 
+  separate(MouseID, c('ID', 'Measurement'), '\\_') %>% 
+  mutate_if(is.character, as.factor)
+```
+
+All character columns were also turned into factors. Now let's answer the following questions:
+
+## 1.1. How many mice were in the experiment?
+## 1.2. What groups can we identify?
+
+Both questions can be addressed easily by looking at the structure of modified data set:
+
+```{r structure}
+str(mice_prot)
+```
+
+According to the number of unique IDs, there were 72 mice in the experiment. According to `Genotype` column, mice can be control (Control) and trisomic (Ts65Dn). Mice also received different treatments (Saline or Memantine). Moreover, some of them have been stimulated to learn (context-shock or C/S) and others have not (shock-context or S/C). This gives us 2*2*2 = 8 experimental groups in total, which is in good agreement with `class` variable since it is a factor with 8 levels.
+
+## 1.3. How well-balanced are the groups? (Are the groups' sizes equal?)
+
+Since there were 15 measurements per mouse, we can do the following to calculate the number of mice in each group:
+
+```{r group sizes determination}
+mice_prot %>% 
+  group_by(class) %>% summarise(number = n() / 15)
+```
+
+This, again, is in good agreement with the dataset description provided on the aforementioned web page.
+
+## 1.4. Are there any missing values?
+One can check the number of `NA` in each column using `summary`:
+
+```{r}
+summary(mice_prot)
+```
+
+Yes, there certainly are some missing values. Moreover, some variables (H3MeK4_N, EGR1_N, H3AcK18_N, pCFOS_N, BCL2_N, BAD_N) contain a lot of NAs. But before we decide how to treat those values, let's check how many observations do not contain missing values:
+
+```{r complete cases before}
+sum(complete.cases(mice_prot))
+```
+
+We need to replace missing values somehow or filter them out. There are several approaches. Setting them to zeros will influence descriptive statistics a lot, so they should be replaced with something else or filtered out. However, observations that contain NA constitute nearly half of total observations. It means that filtering them out would dramatically reduce the amount of data that we have. Replacing the missing values with column mean seems wrong because of the biological reasons. Replacing missing values with mean value of each mouse's ID could help, but the problem is that in some cases there were no measurements of some proteins at all. I tried imputation using `mice` package, but it takes a lot of time and is not so effective as it was expected. So the best solution I could find is to replace missing values with the group mean, grouping the data by `class` variable:
+
+```{r replacing NA w/group mean, message=FALSE}
+mice_prot <- mice_prot %>% group_by(class) %>% 
+  mutate_all(funs(ifelse(is.na(.), mean(., na.rm = TRUE),.)))
+```
+
+Were we able to treat all NAs?
+
+```{r complete cases after}
+sum(complete.cases(mice_prot))
+```
+
+Yes, we were. Let's move to the next part.
+
+# 2. Diffferences in BDNF levels by class
+
+There are 8 classes of mice to compare that is why one should use ANOVA or Kruskal-Wallis. It is necessary to check if the requirements for ANOVA are met:
+
+## 2.1. Distribution check
+
+First, let's apply Shapiro-Wilk normality test.
+
+```{r shapiro}
+shapiro.test(mice_prot$BDNF_N)
+```
+
+So, the distribution is not normal. Let's take a look to estimate it visually:
+
+```{r distribution check qqPlot}
+invisible(qqPlot(mice_prot$BDNF_N, ylab = 'BDNF_N'))
+```
+
+Distribution is almost normal except some mild deviations at the upper part. Let's check the distribution of residuals:
+
+```{r resid_dist_anova}
+bdnf_mod <- aov(BDNF_N ~ class, data = mice_prot)
+ggplot(fortify(bdnf_mod), aes(class, .stdresid, fill = class)) + geom_boxplot() +
+         xlab('Class') + ylab ('Standardized residuals') + ggtitle ('Standardized residuals distribution') + 
+         theme_bw() + theme(plot.title = element_text(hjust = 0.5))
+```
+
+Again, there are some deviations but they are not so crucial. Despite the fact that the number of observations in each group differ, ANOVA still can handle this. Differences in the standardized residuals distribution are due to the slightly different group sizes. The distribution is indeed not normal, but it was shown that the deviations are slight. Ultimately, I believe that using ANOVA in this situation is still a good approach, despite the fact that the requirements for this have not been fully met. Let's explore the results:
+
+```{r anova results}
+summary(bdnf_mod)
+```
+Yes, class of mice significantly influences the level of BDNF in the cortex. But what classes differ from each other? Let's check this using Tukey's post-hoc test:
+
+```{r tukeytest}
+tukey_test <- TukeyHSD(bdnf_mod)
+```
+
+Next, let's visualize the post-hoc test results and the BDNF levels in each class. To make a fancy plot of Tukey test results, I used this code: https://stackoverflow.com/a/30562973
+
+```{r tukey plot SOF}
+psig = as.numeric(apply(tukey_test$class[, 2:3], 1, prod) >= 0) + 1
+op=par(mar=c(4.2,8,3.8,2))
+plot(tukey_test, col=psig, yaxt = 'n')
+for(j in 1:length(psig)){
+  axis(2, at = j, labels = rownames(tukey_test$class)[length(psig) -j + 1],
+       las = 1, cex.axis = 0.8, col.axis = psig[length(psig) - j + 1])
+}
+par(op)
+```
+
+And let's visualize the BDNF levels in different groups of mice.
+
+```{r}
+ggplot(mice_prot, aes(class, BDNF_N)) + geom_boxplot(aes(fill = class)) + theme_bw()
+```
+
+# 3. Linear ERBB4_N model
+
+In this section, a multiple linear model will be made to try to predict the level of ERBB4_N based on other proteins' levels.
+Let's make a model and have a look at it:
+
+## 3.0. Making a full model
+
+```{r}
+erbb_mod <- lm(ERBB4_N ~ . - ID -Measurement -Genotype -Treatment - Behavior -class, data = mice_prot)
+summary(erbb_mod)
+```
+
+The NAs instead of pS6_N coefficients indicate that this variable is linearly related to the other variables and should be removed from the model:
+
+```{r}
+erbb_mod1 <- update(erbb_mod, .~. -pS6_N)
+summary(erbb_mod1)
+```
+
+Let's in advance determine which predictor is the most influential:
+
+```{r}
+which(abs(erbb_mod1$coefficients) == max(abs(erbb_mod1$coefficients)))
+```
+
+Okay, it is ARC_N. Now it is time to diagnose the model.
+
+## 3.1. Diagnosing the model
+
+```{r}
+erbb_diag <- fortify(erbb_mod1)
+```
+
+
+### 3.1.1. Pattern in residuals
+Let's visualize the distribution of residuals:
+
+```{r linear_model stdresid pattern, message=F}
+ggplot(data = erbb_diag, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() +
+  geom_smooth(method = 'lm') + 
+  geom_hline(yintercept = 0) + 
+  geom_hline(yintercept = 2, color = 'red') + 
+  geom_hline(yintercept = -2, color = 'red') + 
+  xlab('Predicted') + ylab ('Standardized residual') + theme_bw()
+```
+
+There is no pattern in residuals but some outliers are present. This information will be used in the section's conclusion.
+
+### 3.1.2. Influential observations
+
+Let's check if there are some influential observations in our data by plotting the Cook's distance:
+
+```{r}
+ggplot(erbb_diag, aes(x = 1:nrow(erbb_diag), y= .cooksd)) + 
+  geom_bar(stat = 'identity') + theme_bw() + 
+  geom_hline(yintercept = 2, color = 'red') + xlab('Observation number') + ylab("Cook's distance")
+```
+
+There are no values above the threshold of 2 and, therefore, no influential observations.
+
+### 3.1.3. independence of observations
+
+Before we make any estimations, it must be noted that there are many measurements of the same protein made for each mouse, making them dependent by default. This information is in the data description. It means that the autocorrelations will certainly be present in our data. However, let's make some plots.
+```{r}
+ggplot(mice_prot, aes(x = ERBB4_N, y = 1:nrow(mice_prot))) + 
+  geom_point() + theme_bw() +
+  labs(y = 'Observation number', x = 'Predicted variable values') 
+```
+
+As it was expected, there are autocorrelations in our data since there were multiple measurements for each mouse. This information will be used in the section's conclusion.
+
+### 3.1.4. Normality check
+To begin with, let's plot observation numbers vs standardized residuals:
+
+```{r}
+ggplot(data = erbb_diag, aes(x = 1:nrow(erbb_diag), y = .stdresid)) +
+  geom_point() + theme_bw() +
+  labs(y = 'Standardized Residual', x = 'Observation number')
+```
+
+There are some outliers in our data, as shown earlier. Now for the QQ-plots:
+
+```{r}
+invisible(qqPlot(erbb_diag$.stdresid))
+```
+```{r}
+invisible(qqPlot(erbb_diag$.fitted))
+```
+
+There are some deviations, especially on the first plot. It is more serious than on the normality check in section 2, and this is another sign that we should not use linear models in this case. Lastly, let's see if there is multicollinearity in our model.
+
+### 3.1.5. Multicollinearity
+
+As in the case of autocorrelations, we can already say that there is some multicollinearity in our model because it was shown earlier (see section ##3.0). But let's estimate it quantitatively using the Variance Inflation Factor (VIF):
+```{r}
+vif(erbb_mod1)
+```
+
+There is a lot of multicollinearity in our data. However, I think it has a biological explanation. Functions of many measured proteins are related to each other. Many of them act as a part of a metabolic pathways (e.g. BAX, BAD, BCL2). Therefore, concentration of such proteins in the cortex are related to each other. This can explain the multicollinearity but cannot help get rid of it.
+
+## 3.2. Conclusion
+
+Requirements for linear model usage have not been fully met. Despite the fact that the model explains about 80% of variance, as shown earlier, there are still dependent observations, autocorrelations, distribution that is far from normal and a lot of multicollinearity in the data. It seems that using linear model in this situation is a bad idea (at least without optimization).
+
+# 4. Principal Component Analysis
+
+Let's start with the PCA itself.
+
+```{r}
+res_pca <- rda(mice_prot[, 3:79], scale = T)
+```
+
+Next, a biplot with symmetrical scaling will be made to have look at the results.
+
+```{r}
+biplot(res_pca)
+```
+Since it is not possible to interpret this plot, let's make biplots of ordinations...
+
+```{r}
+biplot(res_pca, scaling = 'sites', display = 'sites')
+```
+...and correlations:
+
+```{r}
+biplot(res_pca, scaling = 'species', display = 'species', col = 'black')
+```
+
+Ordinations are hard to interpret because there is one large cluster and it is hard to tell where are the observations of different classes. To solve this, let's make an ordination plot with colors. To do this, it is necessary to combine the PCA scores with the initial data frame.
+
+```{r}
+df_scores <- data.frame(mice_prot,
+                        scores(res_pca, display = 'sites', choices = c(1, 2, 3), scaling = 'sites'))
+```
+
+Now it is possible to plot the ordination with colors:
+
+```{r}
+ggplot(df_scores, aes(x = PC1, y = PC2)) + 
+  geom_point(aes(color = class), alpha = 0.5) +
+  ggtitle(label = 'Ordination in PC axes') + theme_bw() + theme(plot.title = element_text(hjust = 0.5))
+```
+Much better. We can see the overlapping clusters of observations now.
+
+Next, we need to answer how much variance is explained by each PC. To do this, we can plot the screeplot with broken stick model for basic visualizations:
+
+```{r}
+screeplot(res_pca, type = 'lines', bstick = T, main = 'Screeplot with Broken Stick')
+```
+
+And extract third principal component's `Cumulative Proportion` section:
+
+```{r}
+pca_result <- as.data.frame(summary(res_pca)$cont)
+pca_result[3, 3]
+```
+
+The `Cumulative Proportion` section of PC3 tells us that the first three principal components explain approximately 53% of variance in our data.
+
+To plot all principal components, we will prepare a data frame and make a plot based on it:
+
+```{r}
+plot_data <- as.data.frame(t(pca_result[c("Proportion Explained"),]))
+plot_data$component <- seq(1:nrow(plot_data))
+ggplot(plot_data, aes(component, `Proportion Explained`)) + geom_bar(stat = "identity") + 
+  theme_bw() + theme(axis.text.x = element_text(angle = 90), plot.title = element_text(hjust = 0.5)) + 
+  scale_x_continuous(breaks = seq(min(plot_data$component), max(plot_data$component), by = 5)) + 
+  xlab('Principal component') + ggtitle('Scree plot without Broken Stick')
+
+```
+
+Finally, let's make a 3D plot of the first three principal components:
+
+```{r}
+fig <- plot_ly(df_scores, x = ~PC1, y = ~PC2, z = ~PC3, marker = list(size = 2), color = ~class)
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'PC1'),
+                                   yaxis = list(title = 'PC2'),
+                                   zaxis = list(title = 'PC3')))
+fig
+```
+
+This ordination plot takes first three principal components into account.
