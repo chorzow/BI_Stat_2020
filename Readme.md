@@ -1,1 +1,1 @@
-This private repository contains a code for Project 1.
+This repository contains all code for Bioinformatics Institute's "Statistics and R" course.
