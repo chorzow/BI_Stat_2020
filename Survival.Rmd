@@ -1,0 +1,164 @@
+---
+title: 'Mini-project: Survival analysis'
+author: "John Doe"
+date: "3/6/2021"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# 0. Installing required packages
+
+```{r package installation, message=FALSE, results='hide'}
+pckgs <- c('dplyr', 'survival', 'survminer', 'ggplot2', 'ggfortify')
+for(i in pckgs){
+  if(!require(i, character.only = T)){
+    install.packages(i, dependencies = T)
+    library(i)
+  }
+}
+```
+
+# 1. EDA
+
+Data uploading and a quick look:
+
+```{r}
+data("ovarian")
+head(ovarian, 10)
+```
+
+
+First, let's read data description using `?ovarian`. According to the description, there are six variables:
+- *futime*: survival or censoring time
+- *fustat*: censoring status (1 or 2)
+- *age*: age in years
+- *resid.ds*: presence of residual disease (1 - no, 2 - yes)
+- *rx*: treatment group (1 or 2)
+- *ecog.ps*: ECOG performance status (1 - better, 2 - worse)
+
+Next, we will take a look at the data using `str`, as usual:
+
+```{r}
+str(ovarian)
+```
+
+Then, let's plot the variables to look at their distributions:
+
+```{r}
+plot(ovarian)
+```
+
+A lot of variables are binary except for `age` and `futime`. Just as data description says. 
+
+Let's check if there are any NAs in our data.
+
+```{r}
+sum(is.na(ovarian))
+```
+
+No. Wow.
+
+# 2. Kaplan-Meier survival curves
+
+Survival analysis will be performed using `Surv` function. Then, a linear model will be made.
+
+```{r}
+km <- with(ovarian, Surv(futime, fustat))
+km_fit <- survfit(Surv(futime, fustat) ~ 1, data = ovarian)
+summary(km_fit)
+```
+
+Let's now plot Kaplan-Meier curve:
+
+```{r}
+autoplot(km_fit)
+```
+
+Then, similar curves will be made for each factor. We will start with treatment:
+
+```{r}
+km_trt_fit <- survfit(Surv(futime, fustat) ~ rx, data=ovarian)
+autoplot(km_trt_fit)
+```
+
+Now for the presence of residual disease:
+
+```{r}
+km_resid_fit <- survfit(Surv(futime, fustat) ~ resid.ds, data=ovarian)
+autoplot(km_resid_fit)
+```
+
+ECOG performance:
+
+```{r}
+km_ecog_fit <- survfit(Surv(futime, fustat) ~ ecog.ps, data=ovarian)
+autoplot(km_ecog_fit)
+```
+
+For age, additional variable called `agefac` will be created. Since death rate from ovarian cancer drastically increases after the age of 60, we will assign its values to `g60` (greater than 60) if the age, obviously, is greater than 60. If it is under 60, the value will be `l60` (less than 60). After that, same operations will be performed to plot Kaplan-Meier curves.
+
+```{r}
+ovarian <- mutate(ovarian, agefac = factor(ifelse(age > 60, 'g60', 'l60')))
+km_age_fit <- survfit(Surv(futime, fustat) ~ agefac, data=ovarian)
+autoplot(km_age_fit)
+```
+
+# 3. Difference in survival between groups
+
+Seems like age affects survival a lot. To estimate difference in survival of all groups, we will perform log-rank test implemented in the `survdiff` function:
+
+```{r}
+survdiff(Surv(futime, fustat) ~ rx, data = ovarian)
+```
+
+There is no significant difference in the survival rate between treatment groups. Now let's check if there is any difference for the residual disease:
+
+```{r}
+survdiff(Surv(futime, fustat) ~ resid.ds, data = ovarian)
+```
+
+Now for the ECOG performance:
+
+```{r}
+survdiff(Surv(futime, fustat) ~ ecog.ps, data = ovarian)
+```
+
+And for the age:
+
+```{r}
+survdiff(Surv(futime, fustat) ~ agefac, data = ovarian)
+```
+
+There is a significant difference in survival rate between age groups. People over 60 are more affected.
+
+# 4. Influence of factors and hazard ratio
+
+Now let's build a Cox model to assess the influence of factors:
+
+```{r}
+cox <- coxph(Surv(futime, fustat) ~ rx + resid.ds + ecog.ps + agefac, data = ovarian)
+summary(cox)
+```
+
+Again, Cox model results support the previous findings, reporting the statistical significance in age. Now let's make a visualization:
+
+```{r}
+cox_fit <- survfit(cox)
+autoplot(cox_fit)
+```
+
+## Covariance analysis
+
+```{r, message=FALSE}
+aa_fit <- aareg(Surv(futime, fustat) ~ rx + resid.ds + ecog.ps + agefac, data = ovarian)
+autoplot(aa_fit)
+```
+
+Finally, let's estimate the hazard ratio:
+
+```{r}
+fit.coxph <- coxph(Surv(futime, fustat) ~ rx + resid.ds + ecog.ps + agefac, data = ovarian)
+ggforest(fit.coxph, data = ovarian)
+```
