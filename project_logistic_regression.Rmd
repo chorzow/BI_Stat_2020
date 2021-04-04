@@ -1,0 +1,159 @@
+---
+title: "Project: Logistic Regression"
+author: "John Doe"
+date: "04/01/2021"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+pckgs <- c('reshape2', 'dplyr', 'tidyr', 'ggplot2', 'car', 'effects', 'corrplot')
+for(i in pckgs){
+  if(!require(i, character.only = T)){
+    install.packages(i, dependencies = T)
+    library(i)
+  }
+}
+```
+
+
+```{r load data}
+path <- '/home/chorzow/BI/R/logistic_regression/'
+binary <-read.csv("binary.csv")
+```
+
+# 1. EDA
+
+First, let's take a look at the structure of the data.
+
+```{r}
+str(binary)
+```
+
+As it was stated in the project description, `admit` variable is binary. What about other variables? Let's plot all of them to see.
+
+```{r}
+plot(binary)
+```
+
+Also, let's make a correlation plot:
+
+```{r}
+corrplot(cor(binary))
+```
+
+
+Let's convert rank and response variable into factors:
+
+```{r}
+binary$admit <- as.factor(binary$admit)
+binary$rank <- as.factor(binary$rank)
+```
+
+Let's check if the data have any NAs in it.
+
+```{r}
+colSums(is.na(binary))
+```
+Okay, there are no NAs. Let's plot the distributions of the quantitative variables:
+
+```{r, message=F}
+ggplot(data = reshape2::melt(binary), aes(x = value)) + 
+  geom_density() + 
+  facet_wrap(~variable, scales = 'free') + theme_bw() + xlab('') + ylab('') + ggtitle('Distributions visualization')
+```
+According to the plots, we can see that `gre` and `gpa` are measured in different scales. So let's make a scaled version of the data frame to correctly estimate effects of the models that we will build:
+
+```{r}
+binary_scale <- binary %>% mutate_each(funs(scale), gre, gpa)
+```
+
+Correlation plot and distributions of gre and gpa tell us that they might be correlated. That brings some multicollinearity into our data, but unfortunately we don't have the opportunity to get rid of it due to the small size of the data. So we will move to making model.
+
+
+# 2. Making models
+
+Okay. Now we will focus on the model construction. Let's make a full model and a scaled one:
+
+```{r make full model}
+mod <- glm(admit ~ ., family = binomial(link = 'logit'), data = binary)
+mod_scaled <- glm(admit ~ ., family = binomial(link = 'logit'), data = binary_scale)
+Anova(mod_scaled)
+```
+
+According to the summary, every predictor has a significant effect on the response variable. Therefore, it is not necessary to simplify the model (to be honest, it is not the most complicated model at all). In the next chunk, it is shown that removal of any predictor is unreasonable for our model.
+
+```{r}
+mod1 <- update(mod, .~.-gre)
+mod2 <- update(mod, .~.-gpa)
+mod3 <- update(mod, .~.-rank)
+AIC(mod, mod1, mod2, mod3)
+```
+
+As we can see, when we remove any of the predictors in the model, AIC increases which is not a good sign. So we will leave the model as it is and proceed to the next step.
+
+# 3. Diagnose the model
+
+## 3.1. Linearity check
+
+```{r, message=F}
+mod_diag <- data.frame(.fitted = fitted(mod, type = 'response'),
+                       .resid_p = resid(mod, type = 'pearson'))
+
+ggplot(mod_diag, aes(y = .resid_p, x = .fitted)) + 
+  geom_point() + theme_bw() + geom_hline(yintercept = 0) + geom_smooth(method = 'loess')
+```
+Looks like that there are some problems with linearity at the left side.
+
+## 3.2. Overdispersion check
+
+For testing for overdispersion we will use the custom function made by Ben Bolker, like in the lecture.
+
+```{r}
+# http://bbolker.github.io/mixedmodels-misc/glmmFAQ.html
+overdisp_fun <- function(model) {
+  rdf <- df.residual(model)
+  if (any(class(model) == 'negbin')) rdf <- rdf - 1
+  rp <- residuals(model,type='pearson')
+  Pearson.chisq <- sum(rp^2)
+  prat <- Pearson.chisq/rdf
+  pval <- pchisq(Pearson.chisq, df=rdf, lower.tail=FALSE)
+  c(chisq=Pearson.chisq,ratio=prat,rdf=rdf,p=pval)
+}
+
+overdisp_fun(mod)
+```
+There is no overdispersion in the model.
+
+# 4. Predictions
+
+Let's make some predictions and visualize the effects:
+
+```{r}
+binary$probs <- predict(object = mod, type = 'response')
+plot(allEffects(mod))
+```
+For the interpretation let's take a look at the summary (of the scaled model, of course):
+
+```{r}
+summary(mod_scaled)
+```
+
+Resulting model: **admit = 0.07 + 0.26\*gre + 0.31\*gpa - 0.68\*rank2 - 1.34\*rank3 - 1.55*rank4**
+
+Interpretation: 
+* 0.07 --- log(odds ratio) for university with rank 1;
+* 0.26 --- how log(odds ratio) changes if we change gre by 1;
+* 0.31 --- change of log(odds ratio) if we change gpa by 1;
+* -0.68 --- change of log(odds ratio) for university with rank 2 compared to rank 1;
+* -1.33 --- change of log(odds ratio) for university with rank 3 compared to rank 1;
+* -1.55 --- change of log(odds ratio) for university with rank 4 compared to rank 1;
+
+What does it mean for us:
+1. Odds ratio for the university with rank 1 is e^0.07^ = 1.07. 
+2. If gre is increased by 1, odds ratio is increased in e^0.26^ = 1.30 times. The more gre score one has, the more is the chance of successful admission.
+3. If gpa is increased by 1, odds ratio is changed in e^0.80^ = 1.36 times.
+4. With decreasing prestige of the university, the probability of admission decreases as well because odds ratio in these cases will be less than zero.
